@@ -1,192 +1,114 @@
 from db import Database
 from query import Query
 from time import process_time
-from random import choice, randrange, seed
+from random import choice, randrange, randint, seed
+from transaction import Transaction
+from transaction_worker import TransactionWorker
+from config import init
+
 import csv
 
-def repeat(grades_table, query, keys):
-    seed(3562901)
-    insert_time_0 = process_time()
-    for i in range(0, 10000):
-        query.insert(906659671 + i, randrange(0, 100), randrange(0, 100), randrange(0, 100), randrange(0, 100))
-        keys.append(906659671 + i)
-    insert_time_1 = process_time()
-    insert_time = insert_time_1 - insert_time_0
-    # Measuring update Performance
-    update_cols = [
-        [randrange(0, 100), None, None, None, None],
-        [None, randrange(0, 100), None, None, None],
-        [None, None, randrange(0, 100), None, None],
-        [None, None, None, randrange(0, 100), None],
-        [None, None, None, None, randrange(0, 100)],
-    ]
-    update_time_0 = process_time()
-    for i in range(0, 10000):
-        query.update(choice(keys), *(choice(update_cols)))
-    update_time_1 = process_time()
-    update_time = update_time_1 - update_time_0
-    # Measuring Select Performance
-    select_time_0 = process_time()
-    for i in range(0, 10000):
-        query.select(choice(keys), 0, [1, 1, 1, 1, 1])
-    select_time_1 = process_time()
-    select_time =  select_time_1 - select_time_0
-    delete_time_0 = process_time() 
-    for i in range(0, 10000):
-        query.delete(906659671 + i)
-    # Query Time
+def repeat(threads_count, number):
+    db = Database()
+    db_name = './ECS165' + str(number)
+    db.open(db_name)
+    grades_name = 'GG' + str(number)
+    grades_table = db.create_table(grades_name, 5, 0)
 
+    keys = []
+    records = {}
+    seed(3562901)
+
+    num_threads = threads_count
+
+    try:
+        grades_table.index.create_index(1)
+        grades_table.index.create_index(2)
+        grades_table.index.create_index(3)
+        grades_table.index.create_index(4)
+    except Exception as e:
+        print('Index API not implemented properly, tests may fail.')
+
+    transaction_workers = []
+    insert_transactions = []
+    select_transactions = []
+    update_transactions = []
+    for i in range(num_threads):
+        insert_transactions.append(Transaction())
+        select_transactions.append(Transaction())
+        update_transactions.append(Transaction())
+        transaction_workers.append(TransactionWorker([]))
+        transaction_workers[i].add_transaction(insert_transactions[i])
+        transaction_workers[i].add_transaction(select_transactions[i])
+        transaction_workers[i].add_transaction(update_transactions[i])
+        
+
+        
+    worker_keys = [ {} for t in transaction_workers ]
+    for i in range(0, 3000):
+        key = 92106429 + i
+        keys.append(key)
+        i = i % num_threads
+        records[key] = [key, randint(i * 20, (i + 1) * 20), randint(i * 20, (i + 1) * 20), randint(i * 20, (i + 1) * 20), randint(i * 20, (i + 1) * 20)]
+        q = Query(grades_table)
+        insert_transactions[i].add_query(q.insert, *records[key])
+        worker_keys[i][key] = True
+
+    t = 0
+    _records = [records[key] for key in keys]
+    for c in range(grades_table.num_columns):
+        _keys = sorted(list(set([record[c] for record in _records])))
+        index = {v: [record for record in _records if record[c] == v] for v in _keys}
+        for key in _keys:
+            found = True
+            for record in index[key]:
+                if record[0] not in worker_keys[t % num_threads]:
+                    found = False
+            if found:
+                query = Query(grades_table)
+                select_transactions[t % num_threads].add_query(query.select, key, c, [1, 1, 1, 1, 1])
+            t += 1
+
+    for j in range(0, num_threads):
+        for key in worker_keys[j]:
+            updated_columns = [None, None, None, None, None]
+            for i in range(1, grades_table.num_columns):
+                value = randint(0, 20)
+                updated_columns[i] = value
+                records[key][i] = value
+                query = Query(grades_table)
+                update_transactions[j].add_query(query.update, key, *updated_columns)
+                updated_columns = [None, None, None, None, None]
+
+    start = process_time()
+    for transaction_worker in transaction_workers:
+        transaction_worker.run()
+
+    for transaction_worker in transaction_workers:
+        transaction_worker.thread.join()
+        
+    end = process_time() 
+    update_time = end-start
     
-    delete_time_1 = process_time()
-    delete_time = delete_time_1 - delete_time_0
-    result = [insert_time, update_time, select_time, delete_time]
-    print(result)
-    return result
-
-# Student Id and 4 grades
-db = Database()
-grades_table = db.create_table('Grades', 5, 0)
-query = Query(grades_table)
-keys = []
-
-result = []
-
-
-
-with open('performance5v0.csv','w') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0, [1,2,3,4,5])
+    score = len(keys)
+    for key in keys:
+        correct = records[key]
         query = Query(grades_table)
-        keys = []
-        writer.writerow(repeat(grades_table, query, keys))
-
-with open('performance2v0.csv','a') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0, [1])
-        query = Query(grades_table)
-        keys = []
-        writer.writerow(repeat(grades_table, query, keys))
+        #TODO: modify this line based on what your SELECT returns
+        result = query.select(key, 0, [1, 1, 1, 1, 1])[0].columns
+        if correct != result:
+            score -= 1
+    print('Score', score, '/', len(keys))
+    print(threads_count, update_time)
+    return update_time
 
 
-db = Database()
-grades_table = db.create_table('Grades', 5, 0, [1, 2])
-query = Query(grades_table)
-keys = []
+with open('performance.csv','w') as f1:
+    writer=csv.writer(f1, delimiter=',',lineterminator='\n',)
+    z = 0
+    for i in range(1, 9):
+        for j in range(20):
+            writer.writerow((i, j, repeat(i, z)))
+            z = z+1
 
-with open('performance3v0.csv','a') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):
-        print(i)
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0, [1, 2])
-        query = Query(grades_table)
-        keys = []
-        writer.writerow(repeat(grades_table, query, keys))
-
-
-
-db = Database()
-grades_table = db.create_table('Grades', 5, 0, [1, 2, 3])
-query = Query(grades_table)
-keys = []
-
-with open('performance4v0.csv','a') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0, [1, 2, 3])
-        query = Query(grades_table)
-        keys = []
-        print(i)
-        writer.writerow(repeat(grades_table, query, keys))
-
-
-
-
-
-with open('performance1v0.csv','a') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0)
-        query = Query(grades_table)
-        keys = []
-        print(i)
-        writer.writerow(repeat(grades_table, query, keys))
-
-
-def repeat(grades_table, query, keys):
-    seed(3562901)
-    insert_time_0 = process_time()
-    for i in range(0, 10000):
-        query.insert(906659671 + i, randrange(0, 100), randrange(0, 100), randrange(0, 100), randrange(0, 100))
-        keys.append(906659671 + i)
-    insert_time_1 = process_time()
-    insert_time = insert_time_1 - insert_time_0
-    # Measuring update Performance    
-    select_time_0 = process_time()
-    for i in range(0, 1000):
-        query.select(randrange(0, 100), 1, [1, 1, 1, 1, 1])
-    select_time_1 = process_time()
-    select_time =  select_time_1 - select_time_0
-    sum_time0 = process_time()
-    for i in range(0, 10):
-        query.sum(0, 0, 3, 1)
-    sum_time1 = process_time()
-    sum_1time = sum_time1 - sum_time0
-    sum_time0 = process_time()
-    for i in range(0, 10):
-        query.sum(0, 4, 3, 1)
-    sum_time1 = process_time()
-    sum_2time = sum_time1 - sum_time0
-    sum_time0 = process_time()
-    for i in range(0, 10):
-        query.sum(0, 9, 3, 1)
-    sum_time1 = process_time()
-    sum_3time = sum_time1 - sum_time0
-    sum_time0 = process_time()
-    for i in range(0, 10):
-        query.sum(0, 19, 3, 1)
-    sum_time1 = process_time()
-    sum_4time = sum_time1 - sum_time0
-    sum_time0 = process_time()
-    for i in range(0, 10):
-        query.sum(0, 29, 3, 1)
-    sum_time1 = process_time()
-    sum_5time = sum_time1 - sum_time0
-    return [select_time, sum_1time, sum_2time, sum_3time, sum_4time, sum_5time]
-
-# Student Id and 4 grades
-db = Database()
-grades_table = db.create_table('Grades', 5, 0)
-query = Query(grades_table)
-keys = []
-
-result = []
-
-
-
-with open('performance_selectsum_with_index.csv','w') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):    
-        print(i)
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0, [1])
-        query = Query(grades_table)
-        keys = []
-        writer.writerow(repeat(grades_table, query, keys))
-
-with open('performance_selectsum_without_index.csv','w') as f1:
-    writer=csv.writer(f1, delimiter='\t',lineterminator='\n',)
-    for i in range(100):
-        print(i)
-        db = Database()
-        grades_table = db.create_table('Grades', 5, 0)
-        query = Query(grades_table)
-        keys = []
-        writer.writerow(repeat(grades_table, query, keys))
 
